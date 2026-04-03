@@ -1,5 +1,6 @@
 package net.pantolomin.raft.replication;
 
+import lombok.Getter;
 import net.pantolomin.raft.Agent;
 import net.pantolomin.raft.Log;
 import net.pantolomin.raft.api.ClusterMember;
@@ -18,6 +19,7 @@ import static java.util.Comparator.comparing;
 
 final class MemberReplicationContext {
     private final int leaderId;
+    @Getter
     private final ClusterMember targetMember;
     private final Agent agent;
     private final ConnectionManager connectionManager;
@@ -38,6 +40,12 @@ final class MemberReplicationContext {
         this.nextIndex = this.state.getLog().getLastIndex() + 1;
     }
 
+    /**
+     * Replicate up to a given index
+     *
+     * @param index the index
+     * @return once the remote server agreed for the index
+     */
     public CompletionStage<Void> replicateEntry(int index) {
         return this.agent.ask(() -> {
             if (index <= this.matchIndex) {
@@ -112,19 +120,23 @@ final class MemberReplicationContext {
         }
     }
 
+    /**
+     * Notify listeners once their index is matched
+     */
     private void notifyListeners() {
         MatchListener listener = this.matchListeners.peek();
         while (listener != null) {
-            if (listener.index > this.matchIndex) {
+            if (listener.index() > this.matchIndex) {
                 // No further listeners can trigger
                 return;
             }
             this.matchListeners.poll();
-            listener.future.complete(null);
+            listener.future().complete(null);
             listener = this.matchListeners.peek();
         }
     }
 
     private record MatchListener(int index, CompletableFuture<Void> future) {
+        // nothing else needed
     }
 }
