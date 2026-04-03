@@ -11,6 +11,7 @@ import net.pantolomin.raft.domain.AppendEntries;
 import net.pantolomin.raft.domain.LogEntry;
 import net.pantolomin.raft.domain.RequestVote;
 import net.pantolomin.raft.domain.State;
+import net.pantolomin.raft.replication.LogReplicator;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -23,24 +24,31 @@ import java.util.function.Function;
 
 @Slf4j
 public class Server {
-    private final AtomicReference<ServerState> serverState = new AtomicReference<>(ServerState.STARTING);
+    private final AtomicReference<ServerState> serverState;
     private final Cluster cluster;
     private final ClusterMember member;
     private final Config config;
     private final StateManager stateManager;
     private final ConnectionManager connectionManager;
     private final Agent agent;
-    private final RequestHandlerImpl requestHandler = new RequestHandlerImpl();
-    private final State state = new State();
-    private ServerBehavior serverBehavior = new StoppedBehavior();
+    private final RequestHandlerImpl requestHandler;
+    private final State state;
+    private final LogReplicator logReplicator;
+    private ServerBehavior serverBehavior;
+    private ClusterMember lastKnownLeader;
 
     private Server(@NonNull Cluster cluster, @NonNull ClusterMember member, @NonNull Config config, @NonNull StateManager stateManager, @NonNull ConnectionManager connectionManager, @NonNull Agent agent) {
+        this.serverState = new AtomicReference<>(ServerState.STARTING);
         this.cluster = cluster;
         this.member = member;
         this.config = config;
         this.stateManager = stateManager;
         this.connectionManager = connectionManager;
         this.agent = agent;
+        this.requestHandler = new RequestHandlerImpl();
+        this.state = new State();
+        this.serverBehavior = new StoppedBehavior();
+        this.logReplicator = new LogReplicator(cluster, member, agent, connectionManager, this.state);
         List<LogEntry> logEntries = this.stateManager.loadState();
         // TODO: init state correctly
         //this.state.setLog(logEntries);
@@ -48,18 +56,26 @@ public class Server {
         this.connectionManager.subscribe(this.requestHandler);
     }
 
-    public void stop() {
-        ServerState newState = this.serverState.updateAndGet(currentState -> currentState.isStarted() ? ServerState.STOPPING : currentState);
-        if (newState != ServerState.STOPPING) {
-            throw new IllegalStateException("Can't stop server - " + newState);
+    public CompletionStage<Void> stop() {
+        ServerState oldServerState = this.serverState.getAndUpdate(s -> s.isStarted() ? ServerState.STOPPING : s);
+        if (!oldServerState.isStarted()) {
+            return CompletableFuture.failedFuture(new IllegalStateException("Can't stop server - " + oldServerState));
         }
-        // TODO: cleanly leave cluster
-        this.connectionManager.unsubscribe(this.requestHandler);
-        this.agent.stop();
-        this.serverState.set(ServerState.STOPPED);
+        return this.agent.run(() -> {
+            // TODO: cleanly leave cluster
+            this.connectionManager.unsubscribe(this.requestHandler);
+            this.agent.stop();
+            this.serverState.set(ServerState.STOPPED);
+        });
     }
 
-    public CompletionStage<Boolean> add(Object command) {
+    /**
+     * Adds a command to the log
+     *
+     * @param command the command
+     * @return the result for the command
+     */
+    public CompletionStage<CommandResult> add(Object command) {
         return this.agent.ask(() -> this.serverBehavior.add(command)).thenCompose(Function.identity());
     }
 
@@ -77,11 +93,12 @@ public class Server {
     }
 
     private void forEachMember(Consumer<ClusterMember> memberOperation) {
-        cluster.getMembers().forEach(m -> {
+        ClusterMember[] clusterMembers = cluster.getMembers();
+        for (ClusterMember m : clusterMembers) {
             if (m != member) {
                 memberOperation.accept(m);
             }
-        });
+        }
     }
 
     // ************************************************************************
@@ -124,8 +141,8 @@ public class Server {
 
         abstract RequestVote.Response handle(ClusterMember member, RequestVote request);
 
-        CompletionStage<Boolean> add(Object command) {
-            return CompletableFuture.failedFuture(new IllegalStateException("Can't add entry to the log - server is not the leader"));
+        CompletionStage<CommandResult> add(Object command) {
+            return CompletableFuture.completedFuture(CommandResult.notLeader(lastKnownLeader));
         }
     }
 
@@ -282,7 +299,7 @@ public class Server {
         }
 
         @Override
-        public CompletionStage<Boolean> add(Object command) {
+        public CompletionStage<CommandResult> add(Object command) {
             LogEntry entry = new LogEntry(state.getCurrentTerm(), state.getLastApplied());
             state.add(entry);
             // TODO: fill prevLog fields
@@ -295,7 +312,7 @@ public class Server {
                     .leaderCommit(state.getCommitIndex())
                     .build();
             forEachMember(targetMember -> sendHeartbeat(targetMember, heartbeatMessage));
-            return CompletableFuture.completedFuture(Boolean.FALSE);
+            return CompletableFuture.completedFuture(CommandResult.failed());
         }
 
         private void sendHeartbeat() {

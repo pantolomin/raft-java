@@ -55,8 +55,7 @@ public class State {
     private int[] matchIndex;
 
     // ************************************************************************
-    // Volatile state on leaders:
-    // (Reinitialized after election)
+    // State mutations
     // ************************************************************************
 
     public void incrementTerm() {

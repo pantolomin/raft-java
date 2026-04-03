@@ -11,7 +11,6 @@ public class LogTest {
     @Test
     public void testEmpty() {
         Log entries = new Log();
-        assertEquals(0, entries.getFirstIndex());
         assertEquals(0, entries.getLastIndex());
         assertNull(entries.getLast());
     }
@@ -19,36 +18,30 @@ public class LogTest {
     @Test
     public void testAddAndGrow() {
         Log entries = new Log();
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < 800; i++) {
             int index = i + 1;
             LogEntry entry = new LogEntry(1, index);
             entries.add(entry);
-            assertEquals(1, entries.getFirstIndex());
             assertEquals(index, entries.getLastIndex());
             assertSame(entry, entries.getLast());
         }
     }
 
     @Test
-    public void testAddAndGrowEnd() {
+    public void testGetEntries() {
         Log entries = new Log();
-        int i = 0;
-        for (; i < 64; i++) {
-            int index = i + 1;
-            LogEntry entry = new LogEntry(1, index);
-            entries.add(entry);
-            assertEquals(1, entries.getFirstIndex());
-            assertEquals(index, entries.getLastIndex());
-            assertSame(entry, entries.getLast());
+        assertEquals(0, entries.getEntries(5).length);
+        for (int i = 0; i < 100; i++) {
+            entries.add(new LogEntry(1, i + 1));
         }
-        entries.commit(64);
-        for (; i < 130; i++) {
-            int index = i + 1;
-            LogEntry entry = new LogEntry(1, index);
-            entries.add(entry);
-            assertEquals(Math.min(index - 63, 64), entries.getFirstIndex());
-            assertEquals(index, entries.getLastIndex());
-            assertSame(entry, entries.getLast());
+        assertEquals(100, entries.getEntries(-5).length);
+        assertEquals(96, entries.getEntries(5).length);
+        assertEquals(1, entries.getEntries(100).length);
+        assertEquals(0, entries.getEntries(101).length);
+        for (int i = 0; i < 500; i++) {
+            entries.add(new LogEntry(1, i + 1));
         }
+        assertEquals(500, entries.getEntries(101).length);
+        assertEquals(51, entries.getEntries(550).length);
     }
 }
