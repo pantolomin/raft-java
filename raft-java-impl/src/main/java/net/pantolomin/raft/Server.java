@@ -48,7 +48,7 @@ public class Server {
         this.requestHandler = new RequestHandlerImpl();
         this.state = new State();
         this.serverBehavior = new StoppedBehavior();
-        this.logReplicator = new LogReplicator(cluster, member, agent, connectionManager, this.state);
+        this.logReplicator = new LogReplicator(config, cluster, member, agent, connectionManager, this.state);
         List<LogEntry> logEntries = this.stateManager.loadState();
         // TODO: init state correctly
         //this.state.setLog(logEntries);

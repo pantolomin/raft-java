@@ -3,6 +3,7 @@ package net.pantolomin.raft.replication;
 import lombok.RequiredArgsConstructor;
 import net.pantolomin.raft.Agent;
 import net.pantolomin.raft.Cluster;
+import net.pantolomin.raft.Config;
 import net.pantolomin.raft.api.ClusterMember;
 import net.pantolomin.raft.api.ConnectionManager;
 import net.pantolomin.raft.domain.State;
@@ -11,13 +12,15 @@ import java.util.concurrent.CompletionStage;
 
 @RequiredArgsConstructor
 public class LogReplicator {
+    private final Config config;
     private final ClusterMember member;
     private final Agent agent;
     private final ConnectionManager connectionManager;
     private final State state;
     private MemberReplicationContext[] memberReplicationContexts;
 
-    public LogReplicator(Cluster cluster, ClusterMember member, Agent agent, ConnectionManager connectionManager, State state) {
+    public LogReplicator(Config config, Cluster cluster, ClusterMember member, Agent agent, ConnectionManager connectionManager, State state) {
+        this.config = config;
         this.member = member;
         this.agent = agent;
         this.connectionManager = connectionManager;
@@ -27,10 +30,9 @@ public class LogReplicator {
         for (int i = 0; i < clusterMembers.length; i++) {
             ClusterMember clusterMember = clusterMembers[i];
             if (clusterMember != this.member) {
-                this.memberReplicationContexts[i] = new MemberReplicationContext(this.member.getId(), clusterMember, agent, connectionManager, state);
+                this.memberReplicationContexts[i] = new MemberReplicationContext(this.member.getId(), config, clusterMember, agent, connectionManager, state);
             }
         }
-        // TODO: also handle heartbeats here
     }
 
     /**
@@ -41,7 +43,6 @@ public class LogReplicator {
     public void onClusterChange(Cluster cluster) {
         ClusterMember[] clusterMembers = cluster.getMembers();
         MemberReplicationContext[] newReplicationContexts = new MemberReplicationContext[clusterMembers.length];
-        boolean serversAdded = false;
         for (int i = 0; i < clusterMembers.length; i++) {
             ClusterMember clusterMember = clusterMembers[i];
             buildContext:
@@ -53,15 +54,10 @@ public class LogReplicator {
                         break buildContext;
                     }
                 }
-                serversAdded = true;
-                newReplicationContexts[i] = new MemberReplicationContext(this.member.getId(), clusterMember, this.agent, this.connectionManager, this.state);
+                newReplicationContexts[i] = new MemberReplicationContext(this.member.getId(), this.config, clusterMember, this.agent, this.connectionManager, this.state);
             }
         }
         this.memberReplicationContexts = newReplicationContexts;
-        if (serversAdded) {
-            // New round of replication with servers that are not seen as up-to-date
-            replicate();
-        }
     }
 
     /**

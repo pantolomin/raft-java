@@ -1,7 +1,9 @@
 package net.pantolomin.raft.replication;
 
 import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
 import net.pantolomin.raft.Agent;
+import net.pantolomin.raft.Config;
 import net.pantolomin.raft.Log;
 import net.pantolomin.raft.api.ClusterMember;
 import net.pantolomin.raft.api.ConnectionManager;
@@ -13,10 +15,13 @@ import java.util.PriorityQueue;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import static java.util.Comparator.comparing;
 
+@Slf4j
 final class MemberReplicationContext {
     private final int leaderId;
     @Getter
@@ -25,19 +30,33 @@ final class MemberReplicationContext {
     private final ConnectionManager connectionManager;
     private final State state;
     private final Queue<MatchListener> matchListeners;
+    private final long heartbeatIntervalMs;
 
     private int nextIndex;
     private int matchIndex;
     private boolean replicationPending;
+    private long lastSentMessageTime;
+    private ScheduledFuture<?> heartbeatsFuture;
 
-    MemberReplicationContext(int leaderId, ClusterMember targetMember, Agent agent, ConnectionManager connectionManager, State state) {
+    public MemberReplicationContext(int leaderId, Config config, ClusterMember targetMember, Agent agent, ConnectionManager connectionManager, State state) {
         this.leaderId = leaderId;
         this.targetMember = targetMember;
         this.agent = agent;
         this.connectionManager = connectionManager;
         this.state = state;
         this.matchListeners = new PriorityQueue<>(comparing(MatchListener::index));
+        this.heartbeatIntervalMs = config.getHeartbeatUnit().toMillis(config.getHeartbeatInterval());
         this.nextIndex = this.state.getLog().getLastIndex() + 1;
+        sendHeartbeat();
+    }
+
+    /**
+     * Stop the replication for remote member
+     */
+    public void stop() {
+        if (this.heartbeatsFuture != null) {
+            this.heartbeatsFuture.cancel(false);
+        }
     }
 
     /**
@@ -68,21 +87,42 @@ final class MemberReplicationContext {
         }
         Log log = this.state.getLog();
         int lastIndex = log.getLastIndex();
-        if (this.nextIndex > lastIndex) {
-            return;
+        if (this.nextIndex <= lastIndex) {
+            sendAppendEntries();
         }
+    }
+
+    /**
+     * Send a heartbeat if needed. This will send all unmatched entries to the remote member.
+     */
+    private void sendHeartbeat() {
+        long timeTillNextHeartbeatMs = this.lastSentMessageTime + this.heartbeatIntervalMs - System.currentTimeMillis();
+        if (timeTillNextHeartbeatMs > 0L) {
+            this.heartbeatsFuture = agent.schedule(this::sendHeartbeat, timeTillNextHeartbeatMs, TimeUnit.MILLISECONDS);
+        } else {
+            sendAppendEntries();
+            this.heartbeatsFuture = agent.schedule(this::sendHeartbeat, this.heartbeatIntervalMs, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /**
+     * Sends a AppendEntries message to the remote member. If the remote member is up-to-date, a heartbeat is sent.
+     */
+    private void sendAppendEntries() {
         this.replicationPending = true;
+        Log raftLog = this.state.getLog();
+        int lastIndex = raftLog.getLastIndex();
         int prevIndex = this.nextIndex - 1;
-        LogEntry prevEntry = log.getEntry(prevIndex);
-        this.connectionManager.send(this.targetMember, AppendEntries.builder()
+        LogEntry prevEntry = raftLog.getEntry(prevIndex);
+        AppendEntries appendEntries = AppendEntries.builder()
                 .term(this.state.getCurrentTerm())
                 .leaderId(this.leaderId)
                 .prevLogIndex(prevIndex)
                 .prevLogTerm(prevEntry != null ? prevEntry.getTerm() : 0)
-                .entries(log.getEntries(this.nextIndex))
-                .leaderCommit(log.getCommitIndex())
-                .build()
-        ).whenComplete(((response, throwable) -> {
+                .entries(raftLog.getEntries(this.nextIndex))
+                .leaderCommit(raftLog.getCommitIndex())
+                .build();
+        this.connectionManager.send(this.targetMember, appendEntries).whenComplete(((response, throwable) -> {
             this.agent.run(() -> {
                 this.replicationPending = false;
                 if (throwable != null) {
@@ -94,6 +134,7 @@ final class MemberReplicationContext {
                 }
             });
         }));
+        this.lastSentMessageTime = System.currentTimeMillis();
     }
 
     /**
