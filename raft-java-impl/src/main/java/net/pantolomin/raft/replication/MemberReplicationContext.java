@@ -23,7 +23,7 @@ import static java.util.Comparator.comparing;
 
 @Slf4j
 final class MemberReplicationContext {
-    private final int leaderId;
+    private final int memberId;
     @Getter
     private final ClusterMember targetMember;
     private final Agent agent;
@@ -38,8 +38,8 @@ final class MemberReplicationContext {
     private long lastSentMessageTime;
     private ScheduledFuture<?> heartbeatsFuture;
 
-    public MemberReplicationContext(int leaderId, Config config, ClusterMember targetMember, Agent agent, ConnectionManager connectionManager, State state) {
-        this.leaderId = leaderId;
+    public MemberReplicationContext(int memberId, Config config, ClusterMember targetMember, Agent agent, ConnectionManager connectionManager, State state) {
+        this.memberId = memberId;
         this.targetMember = targetMember;
         this.agent = agent;
         this.connectionManager = connectionManager;
@@ -47,6 +47,12 @@ final class MemberReplicationContext {
         this.matchListeners = new PriorityQueue<>(comparing(MatchListener::index));
         this.heartbeatIntervalMs = config.getHeartbeatUnit().toMillis(config.getHeartbeatInterval());
         this.nextIndex = this.state.getLog().getLastIndex() + 1;
+    }
+
+    /**
+     * Start the replication for remote member
+     */
+    public void start() {
         sendHeartbeat();
     }
 
@@ -116,24 +122,23 @@ final class MemberReplicationContext {
         LogEntry prevEntry = raftLog.getEntry(prevIndex);
         AppendEntries appendEntries = AppendEntries.builder()
                 .term(this.state.getCurrentTerm())
-                .leaderId(this.leaderId)
+                .leaderId(this.memberId)
                 .prevLogIndex(prevIndex)
                 .prevLogTerm(prevEntry != null ? prevEntry.getTerm() : 0)
                 .entries(raftLog.getEntries(this.nextIndex))
                 .leaderCommit(raftLog.getCommitIndex())
                 .build();
-        this.connectionManager.send(this.targetMember, appendEntries).whenComplete(((response, throwable) -> {
-            this.agent.run(() -> {
-                this.replicationPending = false;
-                if (throwable != null) {
-                    // TODO
-                } else if (response.isSuccess()) {
-                    onMatch(lastIndex);
-                } else {
-                    onMismatch();
-                }
-            });
-        }));
+        this.connectionManager.send(this.targetMember, appendEntries)
+                .whenComplete((response, throwable) -> this.agent.run(() -> {
+                    this.replicationPending = false;
+                    if (throwable != null) {
+                        // TODO
+                    } else if (response.isSuccess()) {
+                        onMatch(lastIndex);
+                    } else {
+                        onMismatch();
+                    }
+                }));
         this.lastSentMessageTime = System.currentTimeMillis();
     }
 

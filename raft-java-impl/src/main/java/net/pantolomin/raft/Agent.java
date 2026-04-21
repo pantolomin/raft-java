@@ -41,15 +41,6 @@ public class Agent {
             Thread.currentThread().interrupt();
             log.warn("Failed to end all RAFT scheduled tasks - interrupted");
         }
-        this.executorService.shutdown();
-        try {
-            if (!this.executorService.awaitTermination(10L, TimeUnit.SECONDS)) {
-                log.warn("Failed to end all RAFT tasks - timeout");
-            }
-        } catch (InterruptedException e) {
-            // Simply put the flag back
-            Thread.currentThread().interrupt();
-            log.warn("Failed to end all RAFT tasks - interrupted");
-        }
+        this.executorService.shutdownNow();
     }
 }

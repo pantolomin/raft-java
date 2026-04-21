@@ -17,6 +17,7 @@ public class LogReplicator {
     private final Agent agent;
     private final ConnectionManager connectionManager;
     private final State state;
+    private boolean started;
     private MemberReplicationContext[] memberReplicationContexts;
 
     public LogReplicator(Config config, Cluster cluster, ClusterMember member, Agent agent, ConnectionManager connectionManager, State state) {
@@ -35,6 +36,24 @@ public class LogReplicator {
         }
     }
 
+    public void start() {
+        for (MemberReplicationContext ctx : this.memberReplicationContexts) {
+            if (ctx != null) {
+                ctx.start();
+            }
+        }
+        this.started = true;
+    }
+
+    public void stop() {
+        this.started = false;
+        for (MemberReplicationContext ctx : this.memberReplicationContexts) {
+            if (ctx != null) {
+                ctx.stop();
+            }
+        }
+    }
+
     /**
      * Update cluster, potentially adding/removing servers for replication.
      *
@@ -43,6 +62,8 @@ public class LogReplicator {
     public void onClusterChange(Cluster cluster) {
         ClusterMember[] clusterMembers = cluster.getMembers();
         MemberReplicationContext[] newReplicationContexts = new MemberReplicationContext[clusterMembers.length];
+        boolean[] remained = new boolean[this.memberReplicationContexts.length];
+        boolean[] added = new boolean[newReplicationContexts.length];
         for (int i = 0; i < clusterMembers.length; i++) {
             ClusterMember clusterMember = clusterMembers[i];
             buildContext:
@@ -50,14 +71,34 @@ public class LogReplicator {
                 for (int j = 0; j < this.memberReplicationContexts.length; j++) {
                     MemberReplicationContext ctx = this.memberReplicationContexts[i];
                     if (ctx != null && ctx.getTargetMember() == clusterMember) {
+                        remained[j] = true;
                         newReplicationContexts[i] = ctx;
                         break buildContext;
                     }
                 }
                 newReplicationContexts[i] = new MemberReplicationContext(this.member.getId(), this.config, clusterMember, this.agent, this.connectionManager, this.state);
+                added[i] = true;
+            }
+        }
+        if (this.started) {
+            for (int i = 0; i < remained.length; i++) {
+                if (remained[i]) {
+                    continue;
+                }
+                MemberReplicationContext ctx = this.memberReplicationContexts[i];
+                if (ctx != null) {
+                    ctx.stop();
+                }
             }
         }
         this.memberReplicationContexts = newReplicationContexts;
+        if (this.started) {
+            for (int i = 0; i < added.length; i++) {
+                if (added[i]) {
+                    this.memberReplicationContexts[i].start();
+                }
+            }
+        }
     }
 
     /**

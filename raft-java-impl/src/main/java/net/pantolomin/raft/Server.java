@@ -26,7 +26,7 @@ import java.util.function.Function;
 public class Server {
     private final AtomicReference<ServerState> serverState;
     private final Cluster cluster;
-    private final ClusterMember member;
+    private final ClusterMember localMember;
     private final Config config;
     private final StateManager stateManager;
     private final ConnectionManager connectionManager;
@@ -37,10 +37,10 @@ public class Server {
     private ServerBehavior serverBehavior;
     private ClusterMember lastKnownLeader;
 
-    private Server(@NonNull Cluster cluster, @NonNull ClusterMember member, @NonNull Config config, @NonNull StateManager stateManager, @NonNull ConnectionManager connectionManager, @NonNull Agent agent) {
+    public Server(@NonNull Cluster cluster, @NonNull ClusterMember localMember, @NonNull Config config, @NonNull StateManager stateManager, @NonNull ConnectionManager connectionManager, @NonNull Agent agent) {
         this.serverState = new AtomicReference<>(ServerState.STARTING);
         this.cluster = cluster;
-        this.member = member;
+        this.localMember = localMember;
         this.config = config;
         this.stateManager = stateManager;
         this.connectionManager = connectionManager;
@@ -48,25 +48,29 @@ public class Server {
         this.requestHandler = new RequestHandlerImpl();
         this.state = new State();
         this.serverBehavior = new StoppedBehavior();
-        this.logReplicator = new LogReplicator(config, cluster, member, agent, connectionManager, this.state);
+        this.logReplicator = new LogReplicator(config, cluster, localMember, agent, connectionManager, this.state);
         List<LogEntry> logEntries = this.stateManager.loadState();
-        // TODO: init state correctly
-        //this.state.setLog(logEntries);
-        updateServerState(ServerState.FOLLOWER, new FollowerBehavior());
+        logEntries.forEach(this.state.getLog()::add);
         this.connectionManager.subscribe(this.requestHandler);
+        this.agent.run(() -> updateServerState(ServerState.FOLLOWER, new FollowerBehavior()));
     }
 
     public CompletionStage<Void> stop() {
-        ServerState oldServerState = this.serverState.getAndUpdate(s -> s.isStarted() ? ServerState.STOPPING : s);
-        if (!oldServerState.isStarted()) {
-            return CompletableFuture.failedFuture(new IllegalStateException("Can't stop server - " + oldServerState));
-        }
         return this.agent.run(() -> {
-            // TODO: cleanly leave cluster
+            ServerState currentState = this.serverState.get();
+            if (!currentState.isStarted()) {
+                throw new IllegalStateException("Can't stop server - " + currentState);
+            }
+            updateServerState(ServerState.STOPPING, new StoppedBehavior());
             this.connectionManager.unsubscribe(this.requestHandler);
             this.agent.stop();
+            log.info("[{}] State change: {} -> {}", localMember.getId(), ServerState.STOPPING, ServerState.STOPPED);
             this.serverState.set(ServerState.STOPPED);
         });
+    }
+
+    public ServerState getState() {
+        return this.serverState.get();
     }
 
     /**
@@ -85,20 +89,38 @@ public class Server {
     // ************************************************************************
     // ************************************************************************
 
-    private void updateServerState(ServerState newState, ServerBehavior newBehavior) {
+    private <S extends ServerBehavior> S updateServerState(ServerState newState, S newBehavior) {
+        ServerState oldState = this.serverState.getAndSet(newState);
+        log.info("[{}] State change: {} -> {}", localMember.getId(), oldState, newState);
         this.serverBehavior.stop();
-        this.serverState.set(newState);
         this.serverBehavior = newBehavior;
         this.serverBehavior.start();
+        return newBehavior;
     }
 
     private void forEachMember(Consumer<ClusterMember> memberOperation) {
         ClusterMember[] clusterMembers = cluster.getMembers();
         for (ClusterMember m : clusterMembers) {
-            if (m != member) {
+            if (m != localMember) {
                 memberOperation.accept(m);
             }
         }
+    }
+
+    private AppendEntries.Response handleAppendEntries(AppendEntries appendEntries) {
+        int remoteTerm = appendEntries.getTerm();
+        Log entries = state.getLog();
+        LogEntry prevEntry = entries.getEntry(appendEntries.getPrevLogIndex());
+        if (prevEntry == null || prevEntry.getTerm() != appendEntries.getPrevLogTerm()) {
+            if (prevEntry == null) {
+                prevEntry = entries.getLast();
+            }
+            return new AppendEntries.Response(prevEntry != null ? prevEntry.getTerm() : 0, false);
+        }
+        entries.add(appendEntries.getPrevLogIndex(), appendEntries.getEntries());
+        entries.commit(appendEntries.getLeaderCommit());
+        state.setCurrentTerm(remoteTerm);
+        return new AppendEntries.Response(remoteTerm, true);
     }
 
     // ************************************************************************
@@ -129,12 +151,26 @@ public class Server {
     private abstract class ServerBehavior {
         private boolean behaviorActive;
 
-        void start() {
+        final void start() {
+            log.debug("[{}] Behavior starting: {}", localMember.getId(), getClass().getSimpleName());
+            onStart();
             this.behaviorActive = true;
+            log.debug("[{}] Behavior started: {}", localMember.getId(), getClass().getSimpleName());
         }
 
-        void stop() {
+        final void stop() {
+            log.debug("[{}] Behavior stopping: {}", localMember.getId(), getClass().getSimpleName());
             this.behaviorActive = false;
+            onStop();
+            log.debug("[{}] Behavior stopped: {}", localMember.getId(), getClass().getSimpleName());
+        }
+
+        protected void onStart() {
+            // nothing to do
+        }
+
+        protected void onStop() {
+            // nothing to do
         }
 
         abstract AppendEntries.Response handle(ClusterMember member, AppendEntries appendEntries);
@@ -148,12 +184,12 @@ public class Server {
 
     private final class StoppedBehavior extends ServerBehavior {
         AppendEntries.Response handle(ClusterMember member, AppendEntries appendEntries) {
-            return new AppendEntries.Response(state.getCurrentTerm(), false);
+            throw new IllegalStateException("Server stopped");
         }
 
         @Override
         RequestVote.Response handle(ClusterMember member, RequestVote request) {
-            return new RequestVote.Response(state.getCurrentTerm(), false);
+            throw new IllegalStateException("Server stopped");
         }
     }
 
@@ -163,30 +199,37 @@ public class Server {
         private long lastLeaderMessageTimeMs;
 
         @Override
-        public void start() {
+        protected void onStart() {
             this.lastLeaderMessageTimeMs = System.currentTimeMillis();
             long avgTimeout = config.getElectionTimeoutUnit().toMillis(config.getElectionTimeout());
-            this.electionTimeoutMs = avgTimeout + Math.round(2d * Math.random()) - 1000L;
+            this.electionTimeoutMs = Math.round(0.8d * avgTimeout + (0.4d * avgTimeout * Math.random()));
+            log.info("[{}] Election timeout set to: {} ms", localMember.getId(), this.electionTimeoutMs);
             this.electionTimeoutFuture = agent.schedule(this::onElectionTimeout, this.electionTimeoutMs, TimeUnit.MILLISECONDS);
         }
 
         @Override
-        public void stop() {
-            super.stop();
+        protected void onStop() {
             this.electionTimeoutFuture.cancel(false);
         }
 
         @Override
         AppendEntries.Response handle(ClusterMember member, AppendEntries appendEntries) {
-            // TODO: implement me
             this.lastLeaderMessageTimeMs = System.currentTimeMillis();
-            return null;
+            lastKnownLeader = member;
+            return handleAppendEntries(appendEntries);
         }
 
         @Override
         RequestVote.Response handle(ClusterMember member, RequestVote request) {
-            boolean voteGranted = request.getTerm() >= state.getCurrentTerm();
-            return new RequestVote.Response(state.getCurrentTerm(), voteGranted);
+            int requestTerm = request.getTerm();
+            if (requestTerm > state.getCurrentTerm()) {
+                log.info("[{}] Accepting candidate {} (term {})", localMember.getId(), member.getId(), requestTerm);
+                this.lastLeaderMessageTimeMs = System.currentTimeMillis();
+                state.setCurrentTerm(requestTerm);
+                return new RequestVote.Response(state.getCurrentTerm(), true);
+            }
+            log.info("[{}] Rejecting candidate {} (term {})", localMember.getId(), member.getId(), requestTerm);
+            return new RequestVote.Response(state.getCurrentTerm(), false);
         }
 
         private void onElectionTimeout() {
@@ -200,54 +243,69 @@ public class Server {
             if (currentTime < timeoutTime) {
                 // Messages were received in the meantime, reschedule election timeout
                 this.electionTimeoutFuture = agent.schedule(this::onElectionTimeout, timeoutTime - currentTime, TimeUnit.MILLISECONDS);
-                return;
+            } else {
+                log.info("[{}] Election timeout", localMember.getId());
+                updateServerState(ServerState.CANDIDATE, new CandidateBehavior());
             }
-            // Increment "term" and become candidate
-            state.incrementTerm();
-            updateServerState(ServerState.CANDIDATE, new CandidateBehavior());
         }
     }
 
     private final class CandidateBehavior extends ServerBehavior {
+        private ScheduledFuture<CompletionStage<Void>> electionTimeoutFuture;
+        private int votedFor;
+
         @Override
-        public void start() {
-            state.becomeCandidate();
+        protected void onStart() {
+            int newTerm = state.getCurrentTerm() + 1;
+            state.setCurrentTerm(newTerm);
+            this.votedFor = 1;
             Log entries = state.getLog();
             LogEntry lastEntry = entries.getLast();
             RequestVote voteRequest = RequestVote.builder()
-                    .term(state.getCurrentTerm())
-                    .candidateId(member.getId())
+                    .term(newTerm)
+                    .candidateId(localMember.getId())
                     .lastLogIndex(entries.getLastIndex())
-                    .lastLogTerm(lastEntry.getTerm())
+                    .lastLogTerm(lastEntry != null ? lastEntry.getTerm() : 0)
                     .build();
+            long electionTimeoutMs = config.getElectionTimeoutUnit().toMillis(config.getElectionTimeout());
+            log.info("[{}] Request for votes (term {}) - timeout: {} ms", localMember.getId(), newTerm, electionTimeoutMs);
             forEachMember(targetMember -> requestVote(targetMember, voteRequest));
+            this.electionTimeoutFuture = agent.schedule(this::onElectionTimeout, electionTimeoutMs, TimeUnit.MILLISECONDS);
+        }
+
+        @Override
+        protected void onStop() {
+            this.electionTimeoutFuture.cancel(false);
         }
 
         @Override
         AppendEntries.Response handle(ClusterMember member, AppendEntries appendEntries) {
-            if (appendEntries.getTerm() < state.getCurrentTerm()) {
+            int entriesTerm = appendEntries.getTerm();
+            if (entriesTerm < state.getCurrentTerm()) {
                 // Not recognised as a legitimate leader
                 return new AppendEntries.Response(state.getCurrentTerm(), false);
             }
-            updateServerState(ServerState.FOLLOWER, new FollowerBehavior());
-            // TODO: handle entries (probably updates our term)
-            return new AppendEntries.Response(state.getCurrentTerm(), true);
+            log.info("[{}] Received new entry invalidating candidate (term {})", localMember.getId(), entriesTerm);
+            return updateServerState(ServerState.FOLLOWER, new FollowerBehavior())
+                    .handle(member, appendEntries);
         }
 
         @Override
         RequestVote.Response handle(ClusterMember member, RequestVote request) {
-            if (request.getTerm() > state.getCurrentTerm()) {
-                // Higher term, vote for them and move to follower
-                updateServerState(ServerState.FOLLOWER, new FollowerBehavior());
-                return new RequestVote.Response(state.getCurrentTerm(), true);
+            int remoteTerm = request.getTerm();
+            if (remoteTerm > state.getCurrentTerm()) {
+                log.info("[{}] Opponent {} becomes better prospect (term {})", localMember.getId(), member.getId(), remoteTerm);
+                return updateServerState(ServerState.FOLLOWER, new FollowerBehavior())
+                        .handle(member, request);
             }
+            log.info("[{}] Opponent {} rejected (term {})", localMember.getId(), member.getId(), remoteTerm);
             return new RequestVote.Response(state.getCurrentTerm(), false);
         }
 
         private void requestVote(ClusterMember targetMember, RequestVote voteRequest) {
             connectionManager.send(targetMember, voteRequest).whenComplete((response, throwable) -> {
                 if (throwable != null) {
-                    log.error("Failed to request vote from member {}", targetMember, throwable);
+                    log.error("[{}] Failed to request vote from member {}", localMember.getId(), targetMember, throwable);
                 } else {
                     agent.run(() -> onVoteResponse(targetMember, response));
                 }
@@ -261,91 +319,66 @@ public class Server {
                 return;
             }
             if (response.isVoteGranted()) {
-                int votes = state.addVote();
-                // TODO: check if enough votes to become leader
+                this.votedFor++;
+                log.info("[{}] Vote accepted by {} - {} votes for us", localMember.getId(), member.getId(), this.votedFor);
+                int majority = cluster.getMembers().length / 2 + 1;
+                if (this.votedFor >= majority) {
+                    log.info("[{}] Obtained the majority of votes", localMember.getId());
+                    updateServerState(ServerState.LEADER, new LeaderBehavior());
+                }
             }
+        }
+
+        private void onElectionTimeout() {
+            if (!isBehaviorActive()) {
+                // Possible (although highly improbable) race condition
+                // "election timeout" task got scheduled just before being cancelled
+                return;
+            }
+            log.info("[{}] Not enough votes before timeout - retry", localMember.getId());
+            onStop();
+            onStart();
         }
     }
 
     private final class LeaderBehavior extends ServerBehavior {
-        private static final LogEntry[] EMPTY_ENTRIES = new LogEntry[0];
-        private ScheduledFuture<?> heartbeatsFuture;
-
         @Override
-        public void start() {
-            this.heartbeatsFuture = agent.schedule(this::sendHeartbeat, config.getHeartbeatInterval(), config.getHeartbeatInterval(), config.getHeartbeatUnit());
-            sendHeartbeat();
+        protected void onStart() {
+            log.info("[{}] Starting log replication", localMember.getId());
+            logReplicator.start();
         }
 
         @Override
-        public void stop() {
-            this.heartbeatsFuture.cancel(false);
+        protected void onStop() {
+            logReplicator.stop();
+            log.info("[{}] Stopped log replication", localMember.getId());
         }
 
         @Override
         AppendEntries.Response handle(ClusterMember member, AppendEntries appendEntries) {
-            // TODO: implement me
-            return null;
+            if (appendEntries.getTerm() < state.getCurrentTerm()) {
+                // Not recognised as a legitimate leader
+                return new AppendEntries.Response(state.getCurrentTerm(), false);
+            }
+            return updateServerState(ServerState.FOLLOWER, new FollowerBehavior())
+                    .handle(member, appendEntries);
         }
 
         @Override
         RequestVote.Response handle(ClusterMember member, RequestVote request) {
-            if (request.getTerm() > state.getCurrentTerm()) {
-                // Higher term, vote for them and move to follower
-                updateServerState(ServerState.FOLLOWER, new FollowerBehavior());
-                return new RequestVote.Response(state.getCurrentTerm(), true);
+            int remoteTerm = request.getTerm();
+            if (remoteTerm > state.getCurrentTerm()) {
+                log.info("[{}] Opponent {} becomes better prospect (term {})", localMember.getId(), member.getId(), remoteTerm);
+                return updateServerState(ServerState.FOLLOWER, new FollowerBehavior())
+                        .handle(member, request);
             }
             return new RequestVote.Response(state.getCurrentTerm(), false);
         }
 
         @Override
         public CompletionStage<CommandResult> add(Object command) {
-            LogEntry entry = new LogEntry(state.getCurrentTerm(), state.getLastApplied());
-            state.add(entry);
-            // TODO: fill prevLog fields
-            AppendEntries heartbeatMessage = AppendEntries.builder()
-                    .term(state.getCurrentTerm())
-                    .leaderId(member.getId())
-                    .prevLogIndex(0)
-                    .prevLogTerm(0)
-                    .entries(new LogEntry[]{entry})
-                    .leaderCommit(state.getCommitIndex())
-                    .build();
-            forEachMember(targetMember -> sendHeartbeat(targetMember, heartbeatMessage));
-            return CompletableFuture.completedFuture(CommandResult.failed());
-        }
-
-        private void sendHeartbeat() {
-            // TODO: fill prevLog fields
-            AppendEntries heartbeatMessage = AppendEntries.builder()
-                    .term(state.getCurrentTerm())
-                    .leaderId(member.getId())
-                    .prevLogIndex(0)
-                    .prevLogTerm(0)
-                    .entries(EMPTY_ENTRIES)
-                    .leaderCommit(state.getCommitIndex())
-                    .build();
-            forEachMember(targetMember -> sendHeartbeat(targetMember, heartbeatMessage));
-        }
-
-        private void sendHeartbeat(ClusterMember targetMember, AppendEntries heartbeatMessage) {
-            connectionManager.send(targetMember, heartbeatMessage).whenComplete(((response, throwable) -> {
-                if (throwable != null) {
-                    log.error("Failed to send heartbeat to member {}", targetMember, throwable);
-                } else {
-                    agent.run(() -> onHeartbeatResponse(targetMember, response));
-                }
-            }));
-        }
-
-        private void onHeartbeatResponse(ClusterMember targetMember, AppendEntries.Response response) {
-            if (!isBehaviorActive()) {
-                // Possible race condition
-                // "heartbeats" were sent when was still leader
-                return;
-            }
-            // TODO: update state for remote
-            state.getLog();
+            state.getLog().add(new LogEntry(state.getCurrentTerm(), command));
+            return logReplicator.replicate().thenApply(commited -> CommandResult.success());
         }
     }
 }

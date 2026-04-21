@@ -37,6 +37,13 @@ public class Log {
         return this.entries[mainArrayIdx][subArrayIdx];
     }
 
+    public void add(int prevIndex, LogEntry[] entries) {
+        this.lastIndex = prevIndex;
+        for (LogEntry entry : entries) {
+            add(entry);
+        }
+    }
+
     public void add(LogEntry entry) {
         int mainArrayIdx = this.lastIndex >> LOG_2_ARRAY_SIZE;
         int subArrayIdx = this.lastIndex & ARRAY_MASK;

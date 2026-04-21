@@ -9,12 +9,15 @@ import net.pantolomin.raft.api.ConnectionManagerImpl;
 import net.pantolomin.raft.domain.AppendEntries;
 import net.pantolomin.raft.domain.LogEntry;
 import net.pantolomin.raft.domain.State;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
 import java.util.Arrays;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 
+import static net.pantolomin.raft.Utils.get;
 import static org.junit.Assert.assertEquals;
 
 @Slf4j
@@ -31,6 +34,19 @@ public class LogReplicatorTest {
     @Before
     public void before() {
         this.agent = new Agent();
+    }
+
+    @After
+    public void after() {
+        if (this.replicator != null) {
+            this.replicator.stop();
+            this.replicator = null;
+        }
+        if (this.agent != null) {
+            this.agent.stop();
+            this.agent = null;
+        }
+        this.connectionManager.clear();
     }
 
     @Test
@@ -80,10 +96,7 @@ public class LogReplicatorTest {
 
     private void givenLogReplicator(long heartbeatIntervalMs, int term, int logEntries) {
         log.info("given LogReplicator with heartbeat interval {} ms, term {} and {} entries", heartbeatIntervalMs, term, logEntries);
-        this.config = Config.builder()
-                .heartbeatInterval(heartbeatIntervalMs)
-                .heartbeatUnit(TimeUnit.MILLISECONDS)
-                .build();
+        this.config = Config.builder().withHeartbeatInterval(heartbeatIntervalMs, TimeUnit.MILLISECONDS).build();
         this.state = new State();
         for (int i = 0; i < logEntries; i++) {
             this.state.getLog().add(new LogEntry(term - 1, new Command()));
@@ -92,6 +105,7 @@ public class LogReplicatorTest {
         this.replicator = get(this.agent.ask(
                 () -> new LogReplicator(this.config, this.cluster, this.cluster.getMembers()[LEADER_ID], this.agent, this.connectionManager, this.state)
         ));
+        this.replicator.start();
     }
 
     private CompletionStage<Void> whenAddEntry() {
@@ -138,17 +152,6 @@ public class LogReplicatorTest {
         assertEquals(prevTerm, message.getPrevLogTerm());
         assertEquals(prevIndex, message.getPrevLogIndex());
         assertEquals(nbEntries, message.getEntries().length);
-    }
-
-    private <T> T get(CompletionStage<T> future) {
-        try {
-            return future.toCompletableFuture().get(5L, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new CompletionException(e);
-        } catch (ExecutionException | TimeoutException e) {
-            throw new CompletionException(e);
-        }
     }
 
     private static final class Command {

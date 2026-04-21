@@ -21,43 +21,4 @@ public class State {
      */
     @Setter
     private int currentTerm;
-
-    /**
-     * CandidateId that received vote in current term (or null if none)
-     */
-    private int votedFor;
-
-    // ************************************************************************
-    // Volatile state on all servers:
-    // ************************************************************************
-
-    /**
-     * Index of highest log entry known to be committed (initialized to 0, increases monotonically)
-     */
-    private int commitIndex;
-
-    /**
-     * Index of highest log entry applied to state machine (initialized to 0, increases monotonically)
-     */
-    private int lastApplied;
-
-    // ************************************************************************
-    // State mutations
-    // ************************************************************************
-
-    public void incrementTerm() {
-        this.currentTerm++;
-    }
-
-    public void becomeCandidate() {
-        this.votedFor = 1;
-    }
-
-    public int addVote() {
-        return ++this.votedFor;
-    }
-
-    public void add(LogEntry entry) {
-        this.log.add(entry);
-    }
 }
