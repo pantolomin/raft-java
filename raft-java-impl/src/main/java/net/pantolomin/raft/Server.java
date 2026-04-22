@@ -226,7 +226,7 @@ public class Server {
                 log.info("[{}] Accepting candidate {} (term {})", localMember.getId(), member.getId(), requestTerm);
                 this.lastLeaderMessageTimeMs = System.currentTimeMillis();
                 state.setCurrentTerm(requestTerm);
-                return new RequestVote.Response(state.getCurrentTerm(), true);
+                return new RequestVote.Response(requestTerm, true);
             }
             log.info("[{}] Rejecting candidate {} (term {})", localMember.getId(), member.getId(), requestTerm);
             return new RequestVote.Response(state.getCurrentTerm(), false);

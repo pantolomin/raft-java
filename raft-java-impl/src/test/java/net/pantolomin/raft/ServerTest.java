@@ -12,15 +12,15 @@ public class ServerTest extends AbstractServerTest {
     public void testNoLeader() {
         givenCluster(5);
         ServerSteps.ServerContext server0 = givenServer(0)
-                .withConfig(Config.builder().withElectionTimeout(1L, TimeUnit.SECONDS).build());
+                .withConfig(Config.builder().withElectionTimeout(500L, TimeUnit.MILLISECONDS).build());
         ServerSteps.ServerContext server1 = givenServer(1)
                 .withConfig(Config.builder().withElectionTimeout(1L, TimeUnit.SECONDS).build());
         server0.whenStart();
         server1.whenStart();
 
-        // Both become CANDIDATE ...
+        // One becomes CANDIDATE ...
         server0.thenStateIs(ServerState.CANDIDATE);
-        server1.thenStateIs(ServerState.CANDIDATE);
+        server1.thenStateIs(ServerState.FOLLOWER);
 
         // ... but no-one becomes LEADER
         sleep(100L);
