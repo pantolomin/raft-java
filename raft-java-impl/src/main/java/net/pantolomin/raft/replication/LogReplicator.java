@@ -106,7 +106,7 @@ public class LogReplicator {
      *
      * @return once the entry is "committed" (enough servers have agreed)
      */
-    public CompletionStage<Void> replicate() {
+    public CompletionStage<Integer> replicate() {
         return new EntryReplicationContext(this.agent, this.state.getLog(), this.memberReplicationContexts).getFuture();
     }
 }

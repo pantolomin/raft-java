@@ -99,28 +99,37 @@ public class Server {
     }
 
     private void forEachMember(Consumer<ClusterMember> memberOperation) {
-        ClusterMember[] clusterMembers = cluster.getMembers();
+        ClusterMember[] clusterMembers = this.cluster.getMembers();
         for (ClusterMember m : clusterMembers) {
-            if (m != localMember) {
+            if (m != this.localMember) {
                 memberOperation.accept(m);
             }
         }
     }
 
+    private boolean canAcceptVote(RequestVote request) {
+        int lastTerm = this.state.getLog().getLastTerm();
+        if (request.getTerm() <= this.state.getCurrentTerm()
+                || request.getLastLogTerm() < lastTerm) {
+            return false;
+        }
+        return request.getLastLogTerm() > lastTerm
+                || request.getLastLogIndex() >= this.state.getLog().getLastIndex();
+    }
+
     private AppendEntries.Response handleAppendEntries(AppendEntries appendEntries) {
-        int remoteTerm = appendEntries.getTerm();
-        Log entries = state.getLog();
+        Log entries = this.state.getLog();
         LogEntry prevEntry = entries.getEntry(appendEntries.getPrevLogIndex());
-        if (prevEntry == null || prevEntry.getTerm() != appendEntries.getPrevLogTerm()) {
+        if (prevEntry == null || prevEntry.term() != appendEntries.getPrevLogTerm()) {
             if (prevEntry == null) {
                 prevEntry = entries.getLast();
             }
-            return new AppendEntries.Response(prevEntry != null ? prevEntry.getTerm() : 0, false);
+            return new AppendEntries.Response(prevEntry != null ? prevEntry.term() : 0, false);
         }
         entries.add(appendEntries.getPrevLogIndex(), appendEntries.getEntries());
         entries.commit(appendEntries.getLeaderCommit());
-        state.setCurrentTerm(remoteTerm);
-        return new AppendEntries.Response(remoteTerm, true);
+        this.state.setCurrentTerm(appendEntries.getTerm());
+        return new AppendEntries.Response(appendEntries.getTerm(), true);
     }
 
     // ************************************************************************
@@ -137,7 +146,16 @@ public class Server {
 
         @Override
         public CompletionStage<RequestVote.Response> handle(ClusterMember member, RequestVote request) {
-            return agent.ask(() -> serverBehavior.handle(member, request));
+            return agent.ask(() -> {
+                int requestTerm = request.getTerm();
+                if (canAcceptVote(request)) {
+                    serverBehavior.acceptVote(member, request);
+                    state.setCurrentTerm(requestTerm);
+                    return new RequestVote.Response(requestTerm, true);
+                }
+                log.info("[{}] Rejecting candidate {} (term {})", localMember.getId(), member.getId(), requestTerm);
+                return new RequestVote.Response(state.getCurrentTerm(), false);
+            });
         }
     }
 
@@ -175,7 +193,7 @@ public class Server {
 
         abstract AppendEntries.Response handle(ClusterMember member, AppendEntries appendEntries);
 
-        abstract RequestVote.Response handle(ClusterMember member, RequestVote request);
+        abstract void acceptVote(ClusterMember member, RequestVote request);
 
         CompletionStage<CommandResult> add(Object command) {
             return CompletableFuture.completedFuture(CommandResult.notLeader(lastKnownLeader));
@@ -188,7 +206,7 @@ public class Server {
         }
 
         @Override
-        RequestVote.Response handle(ClusterMember member, RequestVote request) {
+        void acceptVote(ClusterMember member, RequestVote request) {
             throw new IllegalStateException("Server stopped");
         }
     }
@@ -214,22 +232,19 @@ public class Server {
 
         @Override
         AppendEntries.Response handle(ClusterMember member, AppendEntries appendEntries) {
+            if (appendEntries.getTerm() < state.getCurrentTerm()) {
+                // previous "leader" trying to append ... too late
+                throw new IllegalStateException("Concurrent append entry");
+            }
             this.lastLeaderMessageTimeMs = System.currentTimeMillis();
             lastKnownLeader = member;
             return handleAppendEntries(appendEntries);
         }
 
         @Override
-        RequestVote.Response handle(ClusterMember member, RequestVote request) {
-            int requestTerm = request.getTerm();
-            if (requestTerm > state.getCurrentTerm()) {
-                log.info("[{}] Accepting candidate {} (term {})", localMember.getId(), member.getId(), requestTerm);
-                this.lastLeaderMessageTimeMs = System.currentTimeMillis();
-                state.setCurrentTerm(requestTerm);
-                return new RequestVote.Response(requestTerm, true);
-            }
-            log.info("[{}] Rejecting candidate {} (term {})", localMember.getId(), member.getId(), requestTerm);
-            return new RequestVote.Response(state.getCurrentTerm(), false);
+        void acceptVote(ClusterMember member, RequestVote request) {
+            log.info("[{}] Accepting candidate {} (term {})", localMember.getId(), member.getId(), request.getTerm());
+            this.lastLeaderMessageTimeMs = System.currentTimeMillis();
         }
 
         private void onElectionTimeout() {
@@ -260,12 +275,11 @@ public class Server {
             state.setCurrentTerm(newTerm);
             this.votedFor = 1;
             Log entries = state.getLog();
-            LogEntry lastEntry = entries.getLast();
             RequestVote voteRequest = RequestVote.builder()
                     .term(newTerm)
                     .candidateId(localMember.getId())
                     .lastLogIndex(entries.getLastIndex())
-                    .lastLogTerm(lastEntry != null ? lastEntry.getTerm() : 0)
+                    .lastLogTerm(entries.getLastTerm())
                     .build();
             long electionTimeoutMs = config.getElectionTimeoutUnit().toMillis(config.getElectionTimeout());
             log.info("[{}] Request for votes (term {}) - timeout: {} ms", localMember.getId(), newTerm, electionTimeoutMs);
@@ -280,26 +294,18 @@ public class Server {
 
         @Override
         AppendEntries.Response handle(ClusterMember member, AppendEntries appendEntries) {
-            int entriesTerm = appendEntries.getTerm();
-            if (entriesTerm < state.getCurrentTerm()) {
-                // Not recognised as a legitimate leader
-                return new AppendEntries.Response(state.getCurrentTerm(), false);
+            if (appendEntries.getTerm() < state.getCurrentTerm()) {
+                // previous "leader" trying to append ... too late
+                throw new IllegalStateException("Concurrent append entry");
             }
-            log.info("[{}] Received new entry invalidating candidate (term {})", localMember.getId(), entriesTerm);
-            return updateServerState(ServerState.FOLLOWER, new FollowerBehavior())
-                    .handle(member, appendEntries);
+            // Another candidate got the "leader" position
+            return updateServerState(ServerState.FOLLOWER, new FollowerBehavior()).handle(member, appendEntries);
         }
 
         @Override
-        RequestVote.Response handle(ClusterMember member, RequestVote request) {
-            int remoteTerm = request.getTerm();
-            if (remoteTerm > state.getCurrentTerm()) {
-                log.info("[{}] Opponent {} becomes better prospect (term {})", localMember.getId(), member.getId(), remoteTerm);
-                return updateServerState(ServerState.FOLLOWER, new FollowerBehavior())
-                        .handle(member, request);
-            }
-            log.info("[{}] Opponent {} rejected (term {})", localMember.getId(), member.getId(), remoteTerm);
-            return new RequestVote.Response(state.getCurrentTerm(), false);
+        void acceptVote(ClusterMember member, RequestVote request) {
+            log.info("[{}] Other candidate {} is better (term {})", localMember.getId(), member.getId(), request.getTerm());
+            updateServerState(ServerState.FOLLOWER, new FollowerBehavior()).acceptVote(member, request);
         }
 
         private void requestVote(ClusterMember targetMember, RequestVote voteRequest) {
@@ -318,7 +324,7 @@ public class Server {
                 // "vote requests" were sent before being judged obsolete
                 return;
             }
-            if (response.isVoteGranted()) {
+            if (response.voteGranted()) {
                 this.votedFor++;
                 log.info("[{}] Vote accepted by {} - {} votes for us", localMember.getId(), member.getId(), this.votedFor);
                 int majority = cluster.getMembers().length / 2 + 1;
@@ -356,29 +362,27 @@ public class Server {
 
         @Override
         AppendEntries.Response handle(ClusterMember member, AppendEntries appendEntries) {
-            if (appendEntries.getTerm() < state.getCurrentTerm()) {
-                // Not recognised as a legitimate leader
-                return new AppendEntries.Response(state.getCurrentTerm(), false);
+            if (appendEntries.getTerm() <= state.getCurrentTerm()) {
+                log.error("[{}] Concurrent append entry from {} (term {})", localMember.getId(), member.getId(), appendEntries.getTerm());
+                throw new IllegalStateException("Concurrent append entry");
             }
-            return updateServerState(ServerState.FOLLOWER, new FollowerBehavior())
-                    .handle(member, appendEntries);
+            // Got kicked out of the role (should have received a vote request before though)
+            return updateServerState(ServerState.FOLLOWER, new FollowerBehavior()).handle(member, appendEntries);
         }
 
         @Override
-        RequestVote.Response handle(ClusterMember member, RequestVote request) {
-            int remoteTerm = request.getTerm();
-            if (remoteTerm > state.getCurrentTerm()) {
-                log.info("[{}] Opponent {} becomes better prospect (term {})", localMember.getId(), member.getId(), remoteTerm);
-                return updateServerState(ServerState.FOLLOWER, new FollowerBehavior())
-                        .handle(member, request);
-            }
-            return new RequestVote.Response(state.getCurrentTerm(), false);
+        void acceptVote(ClusterMember member, RequestVote request) {
+            log.info("[{}] New candidate to become leader {} (term {})", localMember.getId(), member.getId(), request.getTerm());
+            updateServerState(ServerState.FOLLOWER, new FollowerBehavior()).acceptVote(member, request);
         }
 
         @Override
         public CompletionStage<CommandResult> add(Object command) {
             state.getLog().add(new LogEntry(state.getCurrentTerm(), command));
-            return logReplicator.replicate().thenApply(commited -> CommandResult.success());
+            return logReplicator.replicate().thenApply(commitedIndex -> {
+                state.getLog().commit(commitedIndex);
+                return CommandResult.success();
+            });
         }
     }
 }

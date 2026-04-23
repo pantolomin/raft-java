@@ -2,7 +2,6 @@ package net.pantolomin.raft.domain;
 
 import lombok.Builder;
 import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 
 /**
  * Invoked by leader to replicate log entries (§5.3); also used as heartbeat (§5.2).
@@ -40,17 +39,11 @@ public class AppendEntries {
      */
     private final int leaderCommit;
 
-    @RequiredArgsConstructor
-    @Getter
-    public static class Response {
-        /**
-         * CurrentTerm, for leader to update itself
-         */
-        private final int term;
-
-        /**
-         * true if follower contained entry matching prevLogIndex and prevLogTerm
-         */
-        private final boolean success;
+    /**
+     * @param term    CurrentTerm, for leader to update itself
+     * @param success true if follower contained entry matching prevLogIndex and prevLogTerm
+     */
+    public record Response(int term, boolean success) {
+        // nothing else needed
     }
 }

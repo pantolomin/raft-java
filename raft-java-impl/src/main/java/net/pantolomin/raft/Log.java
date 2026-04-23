@@ -23,6 +23,11 @@ public class Log {
         this.commitIndex = 0;
     }
 
+    public int getLastTerm() {
+        LogEntry last = getLast();
+        return last != null ? last.term() : 0;
+    }
+
     public LogEntry getLast() {
         return getEntry(this.lastIndex);
     }

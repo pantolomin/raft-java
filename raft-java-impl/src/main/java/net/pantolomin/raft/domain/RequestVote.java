@@ -2,7 +2,6 @@ package net.pantolomin.raft.domain;
 
 import lombok.Builder;
 import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 
 /**
  * Invoked by candidates to gather votes (§5.2).
@@ -30,17 +29,11 @@ public class RequestVote {
      */
     private final int lastLogTerm;
 
-    @RequiredArgsConstructor
-    @Getter
-    public static class Response {
-        /**
-         * CurrentTerm, for candidate to update itself
-         */
-        private final int term;
-
-        /**
-         * true means candidate received vote
-         */
-        private final boolean voteGranted;
+    /**
+     * @param term        CurrentTerm, for candidate to update itself
+     * @param voteGranted true means candidate received vote
+     */
+    public record Response(int term, boolean voteGranted) {
+        // nothing else needed
     }
 }

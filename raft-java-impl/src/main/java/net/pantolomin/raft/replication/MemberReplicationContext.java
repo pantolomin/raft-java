@@ -124,7 +124,7 @@ final class MemberReplicationContext {
                 .term(this.state.getCurrentTerm())
                 .leaderId(this.memberId)
                 .prevLogIndex(prevIndex)
-                .prevLogTerm(prevEntry != null ? prevEntry.getTerm() : 0)
+                .prevLogTerm(prevEntry != null ? prevEntry.term() : 0)
                 .entries(raftLog.getEntries(this.nextIndex))
                 .leaderCommit(raftLog.getCommitIndex())
                 .build();
@@ -133,7 +133,7 @@ final class MemberReplicationContext {
                     this.replicationPending = false;
                     if (throwable != null) {
                         // TODO
-                    } else if (response.isSuccess()) {
+                    } else if (response.success()) {
                         onMatch(lastIndex);
                     } else {
                         onMismatch();

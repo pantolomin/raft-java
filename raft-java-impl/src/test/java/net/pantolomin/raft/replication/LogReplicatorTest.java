@@ -56,16 +56,16 @@ public class LogReplicatorTest {
         thenRemoteMembersReceived(1, 0, 0, 0, 0);
 
         // Add 2 entries
-        CompletionStage<Void> entryCommitted1 = whenAddEntry();
-        CompletionStage<Void> entryCommitted2 = whenAddEntry();
-        CompletionStage<Void> entryCommitted3 = whenAddEntry();
+        CompletionStage<Integer> entryCommitted1 = whenAddEntry();
+        CompletionStage<Integer> entryCommitted2 = whenAddEntry();
+        CompletionStage<Integer> entryCommitted3 = whenAddEntry();
         // Only the first one got replicated on remotes ...
         thenRemoteMembersReceived(1, 0, 0, 1, 0);
-        get(entryCommitted1);
+        assertEquals(1, get(entryCommitted1).intValue());
         // ... and the others got replicated together once the leader got the answers
         thenRemoteMembersReceived(1, 1, 1, 2, 1);
-        get(entryCommitted2);
-        get(entryCommitted3);
+        assertEquals(2, get(entryCommitted2).intValue());
+        assertEquals(3, get(entryCommitted3).intValue());
     }
 
     @Test
@@ -80,12 +80,12 @@ public class LogReplicatorTest {
         thenRemoteMembersReceived(2, 1, 1, 4, 0);
         thenRemoteMembersReceived(2, 0, 0, 5, 0);
 
-        CompletionStage<Void> entryCommitted = whenAddEntry();
+        CompletionStage<Integer> entryCommitted = whenAddEntry();
         thenRemoteMembersReceived(2, 1, 5, 1, 1);
-        get(entryCommitted);
+        assertEquals(6, get(entryCommitted).intValue());
         entryCommitted = whenAddEntry();
         thenRemoteMembersReceived(2, 2, 6, 1, 2);
-        get(entryCommitted);
+        assertEquals(7, get(entryCommitted).intValue());
     }
 
     // ************************************************************************
@@ -108,7 +108,7 @@ public class LogReplicatorTest {
         this.replicator.start();
     }
 
-    private CompletionStage<Void> whenAddEntry() {
+    private CompletionStage<Integer> whenAddEntry() {
         log.info("when adding entry");
         return get(this.agent.ask(() -> {
             this.state.getLog().add(new LogEntry(this.state.getCurrentTerm(), new Command()));
