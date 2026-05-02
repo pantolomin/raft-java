@@ -1,5 +1,7 @@
 package net.pantolomin.raft.domain;
 
-public record LogEntry(int term, Object command) {
+import java.io.Serializable;
+
+public record LogEntry(int term, Object command) implements Serializable {
     // nothing else needed
 }

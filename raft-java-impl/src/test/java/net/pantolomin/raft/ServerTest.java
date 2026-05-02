@@ -51,13 +51,13 @@ public class ServerTest extends AbstractServerTest {
     @Test
     public void testFigure7() {
         givenCluster(7);
-        ServerSteps.ServerContext server0 = server(0, 5000L);
+        ServerSteps.ServerContext server0 = server(0, 2000L);
         ServerSteps.ServerContext server1 = server(1, 20000L);
         ServerSteps.ServerContext server2 = server(2, 20000L);
         ServerSteps.ServerContext server3 = server(3, 20000L);
         ServerSteps.ServerContext server4 = server(4, 20000L);
         ServerSteps.ServerContext server5 = server(5, 20000L);
-        ServerSteps.ServerContext server6 = server(6, 20000L);
+        ServerSteps.ServerContext server6 = server(6, 4000L);
         server0.whenStart();
         server1.whenStart();
         server2.whenStart();
@@ -97,17 +97,17 @@ public class ServerTest extends AbstractServerTest {
         cmd2.thenNoAnswer();
         cmd3.thenNoAnswer();
         server6.whenStop();
+        server0.thenEntries(1, 1, 1);
+        server1.thenEntries(1, 1, 1);
+        server2.thenEntries(1, 1, 1);
+        server3.thenEntries(1, 1, 1);
+        server4.thenEntries(1, 1, 1);
+        server5.thenEntries(1, 1, 1);
+        server6.thenEntries(1, 1, 1, 2, 2, 2);
         server1.whenStart();
         server2.whenStart();
         server4.whenStart();
         server6.whenStart();
-        server0.thenEntries(1, 1, 1);
-        server1.thenEntries(1, 1, 1, 2, 2, 2);
-        server2.thenEntries(1, 1, 1, 2, 2, 2);
-        server3.thenEntries(1, 1, 1);
-        server4.thenEntries(1, 1, 1, 2, 2, 2);
-        server5.thenEntries(1, 1, 1);
-        server6.thenEntries(1, 1, 1, 2, 2, 2);
 
         // We have a new LEADER
         server6.thenStateIs(ServerState.LEADER);
@@ -125,11 +125,6 @@ public class ServerTest extends AbstractServerTest {
         cmd4.thenNoAnswer();
         cmd5.thenNoAnswer();
         server6.whenStop();
-        server1.whenStart();
-        server2.whenStart();
-        server3.whenStart();
-        server4.whenStart();
-        server(5, 200L).whenStart();
         server0.thenEntries(1, 1, 1);
         server1.thenEntries(1, 1, 1, 2, 2, 2);
         server2.thenEntries(1, 1, 1, 2, 2, 2);
@@ -137,6 +132,11 @@ public class ServerTest extends AbstractServerTest {
         server4.thenEntries(1, 1, 1, 2, 2, 2);
         server5.thenEntries(1, 1, 1);
         server6.thenEntries(1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3);
+        server1.whenStart();
+        server2.whenStart();
+        server3.whenStart();
+        server4.whenStart();
+        server(5, 200L).whenStart();
 
         // We have a new LEADER
         server5.thenStateIs(ServerState.LEADER);
@@ -213,7 +213,7 @@ public class ServerTest extends AbstractServerTest {
     private ServerSteps.ServerContext server(int memberId, long electionTimeout) {
         return givenServer(memberId)
                 .withConfig(Config.builder()
-                        .withHeartbeatInterval(50L, TimeUnit.MILLISECONDS)
+                        .withHeartbeatInterval(200L, TimeUnit.MILLISECONDS)
                         .withElectionTimeout(electionTimeout, TimeUnit.MILLISECONDS)
                         .build());
     }
