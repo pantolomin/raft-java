@@ -3,12 +3,14 @@ package net.pantolomin.raft.domain;
 import lombok.Builder;
 import lombok.Getter;
 
+import java.io.Serializable;
+
 /**
  * Invoked by candidates to gather votes (§5.2).
  */
 @Getter
 @Builder
-public class RequestVote {
+public class RequestVote implements Serializable {
     /**
      * Candidate’s term
      */
@@ -33,7 +35,7 @@ public class RequestVote {
      * @param term        CurrentTerm, for candidate to update itself
      * @param voteGranted true means candidate received vote
      */
-    public record Response(int term, boolean voteGranted) {
+    public record Response(int term, boolean voteGranted) implements Serializable {
         // nothing else needed
     }
 }

@@ -2,13 +2,17 @@ package net.pantolomin.raft.domain;
 
 import lombok.Builder;
 import lombok.Getter;
+import lombok.ToString;
+
+import java.io.Serializable;
 
 /**
  * Invoked by leader to replicate log entries (§5.3); also used as heartbeat (§5.2).
  */
 @Builder
 @Getter
-public class AppendEntries {
+@ToString
+public class AppendEntries implements Serializable {
     /**
      * Leader’s term
      */
@@ -43,7 +47,7 @@ public class AppendEntries {
      * @param term    CurrentTerm, for leader to update itself
      * @param success true if follower contained entry matching prevLogIndex and prevLogTerm
      */
-    public record Response(int term, boolean success) {
+    public record Response(int term, boolean success) implements Serializable {
         // nothing else needed
     }
 }

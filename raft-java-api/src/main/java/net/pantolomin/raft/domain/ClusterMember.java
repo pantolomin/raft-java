@@ -1,4 +1,4 @@
-package net.pantolomin.raft.api;
+package net.pantolomin.raft.domain;
 
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;

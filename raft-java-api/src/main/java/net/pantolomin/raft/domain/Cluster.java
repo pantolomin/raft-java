@@ -1,8 +1,7 @@
-package net.pantolomin.raft;
+package net.pantolomin.raft.domain;
 
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
-import net.pantolomin.raft.api.ClusterMember;
 
 @RequiredArgsConstructor
 @Getter

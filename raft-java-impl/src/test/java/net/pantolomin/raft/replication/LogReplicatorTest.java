@@ -2,13 +2,10 @@ package net.pantolomin.raft.replication;
 
 import lombok.extern.slf4j.Slf4j;
 import net.pantolomin.raft.Agent;
-import net.pantolomin.raft.Cluster;
 import net.pantolomin.raft.Config;
-import net.pantolomin.raft.api.ClusterMember;
 import net.pantolomin.raft.api.ConnectionManagerImpl;
-import net.pantolomin.raft.domain.AppendEntries;
-import net.pantolomin.raft.domain.LogEntry;
-import net.pantolomin.raft.domain.State;
+import net.pantolomin.raft.domain.*;
+import net.pantolomin.raft.log.RaftLogMemory;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -17,7 +14,7 @@ import java.util.Arrays;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 
-import static net.pantolomin.raft.Utils.get;
+import static net.pantolomin.raft.FutureUtils.get;
 import static org.junit.Assert.assertEquals;
 
 @Slf4j
@@ -33,7 +30,7 @@ public class LogReplicatorTest {
 
     @Before
     public void before() {
-        this.agent = new Agent();
+        this.agent = new Agent(cluster.getMembers()[0]);
     }
 
     @After
@@ -97,9 +94,9 @@ public class LogReplicatorTest {
     private void givenLogReplicator(long heartbeatIntervalMs, int term, int logEntries) {
         log.info("given LogReplicator with heartbeat interval {} ms, term {} and {} entries", heartbeatIntervalMs, term, logEntries);
         this.config = Config.builder().withHeartbeatInterval(heartbeatIntervalMs, TimeUnit.MILLISECONDS).build();
-        this.state = new State();
+        this.state = new State(new RaftLogMemory(), 0);
         for (int i = 0; i < logEntries; i++) {
-            this.state.getLog().add(new LogEntry(term - 1, new Command()));
+            this.state.getRaftLog().add(new LogEntry(term - 1, new Command()));
         }
         this.state.setCurrentTerm(term);
         this.replicator = get(this.agent.ask(
@@ -111,7 +108,7 @@ public class LogReplicatorTest {
     private CompletionStage<Integer> whenAddEntry() {
         log.info("when adding entry");
         return get(this.agent.ask(() -> {
-            this.state.getLog().add(new LogEntry(this.state.getCurrentTerm(), new Command()));
+            this.state.getRaftLog().add(new LogEntry(this.state.getCurrentTerm(), new Command()));
             return this.replicator.replicate();
         }));
     }

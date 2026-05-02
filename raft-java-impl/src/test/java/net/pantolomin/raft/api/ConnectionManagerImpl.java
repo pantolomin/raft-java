@@ -3,6 +3,7 @@ package net.pantolomin.raft.api;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import net.pantolomin.raft.domain.AppendEntries;
+import net.pantolomin.raft.domain.ClusterMember;
 import net.pantolomin.raft.domain.RequestVote;
 
 import java.util.Map;
@@ -19,6 +20,16 @@ public class ConnectionManagerImpl implements ConnectionManager {
 
     public void clear() {
         this.appendEntries.clear();
+    }
+
+    @Override
+    public void start() {
+        
+    }
+
+    @Override
+    public void stop() {
+
     }
 
     @Override

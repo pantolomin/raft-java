@@ -4,12 +4,9 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.pantolomin.raft.Agent;
 import net.pantolomin.raft.Config;
-import net.pantolomin.raft.Log;
-import net.pantolomin.raft.api.ClusterMember;
 import net.pantolomin.raft.api.ConnectionManager;
-import net.pantolomin.raft.domain.AppendEntries;
-import net.pantolomin.raft.domain.LogEntry;
-import net.pantolomin.raft.domain.State;
+import net.pantolomin.raft.api.RaftLog;
+import net.pantolomin.raft.domain.*;
 
 import java.util.PriorityQueue;
 import java.util.Queue;
@@ -20,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import static java.util.Comparator.comparing;
+import static net.pantolomin.raft.FutureUtils.unwrap;
 
 @Slf4j
 final class MemberReplicationContext {
@@ -46,7 +44,7 @@ final class MemberReplicationContext {
         this.state = state;
         this.matchListeners = new PriorityQueue<>(comparing(MatchListener::index));
         this.heartbeatIntervalMs = config.getHeartbeatUnit().toMillis(config.getHeartbeatInterval());
-        this.nextIndex = this.state.getLog().getLastIndex() + 1;
+        this.nextIndex = this.state.getRaftLog().getLastIndex() + 1;
     }
 
     /**
@@ -91,8 +89,8 @@ final class MemberReplicationContext {
         if (this.replicationPending) {
             return;
         }
-        Log log = this.state.getLog();
-        int lastIndex = log.getLastIndex();
+        RaftLog raftLog = this.state.getRaftLog();
+        int lastIndex = raftLog.getLastIndex();
         if (this.nextIndex <= lastIndex) {
             sendAppendEntries();
         }
@@ -116,7 +114,7 @@ final class MemberReplicationContext {
      */
     private void sendAppendEntries() {
         this.replicationPending = true;
-        Log raftLog = this.state.getLog();
+        RaftLog raftLog = this.state.getRaftLog();
         int lastIndex = raftLog.getLastIndex();
         int prevIndex = this.nextIndex - 1;
         LogEntry prevEntry = raftLog.getEntry(prevIndex);
@@ -132,7 +130,9 @@ final class MemberReplicationContext {
                 .whenComplete((response, throwable) -> this.agent.run(() -> {
                     this.replicationPending = false;
                     if (throwable != null) {
-                        // TODO
+                        if (!(unwrap(throwable) instanceof NotConnectedException)) {
+                            log.error("[{}] Failed to send entries to member {}", memberId, targetMember, throwable);
+                        }
                     } else if (response.success()) {
                         onMatch(lastIndex);
                     } else {

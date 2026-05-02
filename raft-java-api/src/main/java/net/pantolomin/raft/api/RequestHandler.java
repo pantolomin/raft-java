@@ -1,6 +1,7 @@
 package net.pantolomin.raft.api;
 
 import net.pantolomin.raft.domain.AppendEntries;
+import net.pantolomin.raft.domain.ClusterMember;
 import net.pantolomin.raft.domain.RequestVote;
 
 import java.util.concurrent.CompletionStage;

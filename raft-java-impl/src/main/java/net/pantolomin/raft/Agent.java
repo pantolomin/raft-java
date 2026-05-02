@@ -1,14 +1,21 @@
 package net.pantolomin.raft;
 
 import lombok.extern.slf4j.Slf4j;
+import net.pantolomin.raft.domain.ClusterMember;
 
 import java.util.concurrent.*;
 import java.util.function.Supplier;
 
 @Slf4j
 public class Agent {
-    private final ExecutorService executorService = Executors.newSingleThreadExecutor();
+    private final ExecutorService executorService;
     private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
+
+    public Agent(ClusterMember localMember) {
+        this.executorService = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "raft-agent-" + localMember.getId())
+        );
+    }
 
     public CompletionStage<Void> run(Runnable task) {
         return CompletableFuture.runAsync(task, this.executorService);

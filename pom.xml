@@ -10,6 +10,9 @@
 
     <modules>
         <module>raft-java-impl</module>
+        <module>raft-java-api</module>
+        <module>raft-java-raftLog</module>
+        <module>raft-java-net</module>
     </modules>
 
     <properties>

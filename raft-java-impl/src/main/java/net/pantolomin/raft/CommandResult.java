@@ -3,7 +3,7 @@ package net.pantolomin.raft;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
-import net.pantolomin.raft.api.ClusterMember;
+import net.pantolomin.raft.domain.ClusterMember;
 
 @RequiredArgsConstructor(access = AccessLevel.PRIVATE)
 @Getter

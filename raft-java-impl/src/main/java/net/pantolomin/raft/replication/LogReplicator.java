@@ -2,10 +2,10 @@ package net.pantolomin.raft.replication;
 
 import lombok.RequiredArgsConstructor;
 import net.pantolomin.raft.Agent;
-import net.pantolomin.raft.Cluster;
 import net.pantolomin.raft.Config;
-import net.pantolomin.raft.api.ClusterMember;
 import net.pantolomin.raft.api.ConnectionManager;
+import net.pantolomin.raft.domain.Cluster;
+import net.pantolomin.raft.domain.ClusterMember;
 import net.pantolomin.raft.domain.State;
 
 import java.util.concurrent.CompletionStage;
@@ -107,6 +107,6 @@ public class LogReplicator {
      * @return once the entry is "committed" (enough servers have agreed)
      */
     public CompletionStage<Integer> replicate() {
-        return new EntryReplicationContext(this.agent, this.state.getLog(), this.memberReplicationContexts).getFuture();
+        return new EntryReplicationContext(this.agent, this.state.getRaftLog(), this.memberReplicationContexts).getFuture();
     }
 }

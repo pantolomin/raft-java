@@ -3,17 +3,12 @@ package net.pantolomin.raft;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
-import net.pantolomin.raft.api.ClusterMember;
 import net.pantolomin.raft.api.ConnectionManager;
+import net.pantolomin.raft.api.RaftLog;
 import net.pantolomin.raft.api.RequestHandler;
-import net.pantolomin.raft.api.StateManager;
-import net.pantolomin.raft.domain.AppendEntries;
-import net.pantolomin.raft.domain.LogEntry;
-import net.pantolomin.raft.domain.RequestVote;
-import net.pantolomin.raft.domain.State;
+import net.pantolomin.raft.domain.*;
 import net.pantolomin.raft.replication.LogReplicator;
 
-import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledFuture;
@@ -22,13 +17,14 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
+import static net.pantolomin.raft.FutureUtils.unwrap;
+
 @Slf4j
 public class Server {
     private final AtomicReference<ServerState> serverState;
     private final Cluster cluster;
     private final ClusterMember localMember;
     private final Config config;
-    private final StateManager stateManager;
     private final ConnectionManager connectionManager;
     private final Agent agent;
     private final RequestHandlerImpl requestHandler;
@@ -37,22 +33,20 @@ public class Server {
     private ServerBehavior serverBehavior;
     private ClusterMember lastKnownLeader;
 
-    public Server(@NonNull Cluster cluster, @NonNull ClusterMember localMember, @NonNull Config config, @NonNull StateManager stateManager, @NonNull ConnectionManager connectionManager, @NonNull Agent agent) {
+    public Server(@NonNull Cluster cluster, @NonNull ClusterMember localMember, @NonNull Config config, @NonNull RaftLog raftLog, @NonNull ConnectionManager connectionManager, @NonNull Agent agent) {
         this.serverState = new AtomicReference<>(ServerState.STARTING);
         this.cluster = cluster;
         this.localMember = localMember;
         this.config = config;
-        this.stateManager = stateManager;
         this.connectionManager = connectionManager;
         this.agent = agent;
         this.requestHandler = new RequestHandlerImpl();
-        this.state = new State();
+        this.state = new State(raftLog, raftLog.getLastTerm());
         this.serverBehavior = new StoppedBehavior();
         this.logReplicator = new LogReplicator(config, cluster, localMember, agent, connectionManager, this.state);
-        List<LogEntry> logEntries = this.stateManager.loadState();
-        logEntries.forEach(this.state.getLog()::add);
         this.connectionManager.subscribe(this.requestHandler);
         this.agent.run(() -> updateServerState(ServerState.FOLLOWER, new FollowerBehavior()));
+        this.connectionManager.start();
     }
 
     public CompletionStage<Void> stop() {
@@ -63,6 +57,7 @@ public class Server {
             }
             updateServerState(ServerState.STOPPING, new StoppedBehavior());
             this.connectionManager.unsubscribe(this.requestHandler);
+            this.connectionManager.stop();
             this.agent.stop();
             log.info("[{}] State change: {} -> {}", localMember.getId(), ServerState.STOPPING, ServerState.STOPPED);
             this.serverState.set(ServerState.STOPPED);
@@ -108,23 +103,25 @@ public class Server {
     }
 
     private boolean canAcceptVote(RequestVote request) {
-        int lastTerm = this.state.getLog().getLastTerm();
+        int lastTerm = this.state.getRaftLog().getLastTerm();
         if (request.getTerm() <= this.state.getCurrentTerm()
                 || request.getLastLogTerm() < lastTerm) {
             return false;
         }
         return request.getLastLogTerm() > lastTerm
-                || request.getLastLogIndex() >= this.state.getLog().getLastIndex();
+                || request.getLastLogIndex() >= this.state.getRaftLog().getLastIndex();
     }
 
     private AppendEntries.Response handleAppendEntries(AppendEntries appendEntries) {
-        Log entries = this.state.getLog();
-        LogEntry prevEntry = entries.getEntry(appendEntries.getPrevLogIndex());
-        if (prevEntry == null || prevEntry.term() != appendEntries.getPrevLogTerm()) {
-            if (prevEntry == null) {
-                prevEntry = entries.getLast();
+        RaftLog entries = this.state.getRaftLog();
+        if (appendEntries.getPrevLogIndex() > 0) {
+            LogEntry prevEntry = entries.getEntry(appendEntries.getPrevLogIndex());
+            if (prevEntry == null || prevEntry.term() != appendEntries.getPrevLogTerm()) {
+                if (prevEntry == null) {
+                    prevEntry = entries.getLast();
+                }
+                return new AppendEntries.Response(prevEntry != null ? prevEntry.term() : 0, false);
             }
-            return new AppendEntries.Response(prevEntry != null ? prevEntry.term() : 0, false);
         }
         entries.add(appendEntries.getPrevLogIndex(), appendEntries.getEntries());
         entries.commit(appendEntries.getLeaderCommit());
@@ -274,7 +271,7 @@ public class Server {
             int newTerm = state.getCurrentTerm() + 1;
             state.setCurrentTerm(newTerm);
             this.votedFor = 1;
-            Log entries = state.getLog();
+            RaftLog entries = state.getRaftLog();
             RequestVote voteRequest = RequestVote.builder()
                     .term(newTerm)
                     .candidateId(localMember.getId())
@@ -289,7 +286,9 @@ public class Server {
 
         @Override
         protected void onStop() {
-            this.electionTimeoutFuture.cancel(false);
+            if (this.electionTimeoutFuture != null) {
+                this.electionTimeoutFuture.cancel(false);
+            }
         }
 
         @Override
@@ -311,7 +310,9 @@ public class Server {
         private void requestVote(ClusterMember targetMember, RequestVote voteRequest) {
             connectionManager.send(targetMember, voteRequest).whenComplete((response, throwable) -> {
                 if (throwable != null) {
-                    log.error("[{}] Failed to request vote from member {}", localMember.getId(), targetMember, throwable);
+                    if (!(unwrap(throwable) instanceof NotConnectedException)) {
+                        log.error("[{}] Failed to request vote from member {}", localMember.getId(), targetMember, throwable);
+                    }
                 } else {
                     agent.run(() -> onVoteResponse(targetMember, response));
                 }
@@ -378,9 +379,9 @@ public class Server {
 
         @Override
         public CompletionStage<CommandResult> add(Object command) {
-            state.getLog().add(new LogEntry(state.getCurrentTerm(), command));
+            state.getRaftLog().add(new LogEntry(state.getCurrentTerm(), command));
             return logReplicator.replicate().thenApply(commitedIndex -> {
-                state.getLog().commit(commitedIndex);
+                state.getRaftLog().commit(commitedIndex);
                 return CommandResult.success();
             });
         }
